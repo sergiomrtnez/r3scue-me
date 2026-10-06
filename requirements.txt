@@ -1,6 +1,7 @@
-# r3scue-me: Python Dependencies for Termux & Linux
+# DroidServer-AI: Python Dependencies for Termux & Linux
 # Kept strictly minimal to operate efficiently on resource-constrained Android devices
 
 requests>=2.31.0
 beautifulsoup4>=4.12.3
 feedparser>=6.0.11
+pyTelegramBotAPI>=4.14.0

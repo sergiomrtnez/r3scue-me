@@ -4,7 +4,7 @@ modules/deal_finder.py - Lightweight Deal & Price Alert Monitor.
 Scrapes target e-commerce or classified listing pages using strict lightweight
 HTTP requests and BeautifulSoup (zero headless browser overhead).
 Leverages AI to filter out false positives, evaluate real value discounts,
-and push instant alerts via ntfy.
+and push instant alerts via TelegramOutbound.
 """
 
 from typing import Any, Dict, List
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from core.base_module import BaseModule
 from core.ai_handler import AIHandler
-from core.notifier import Notifier
+from core.telegram_outbound import TelegramOutbound
 
 
 class DealFinder(BaseModule):
@@ -22,8 +22,13 @@ class DealFinder(BaseModule):
     Automated deal hunter and false-positive filter using lightweight scraping.
     """
 
-    def __init__(self, config: Dict[str, Any], ai_handler: AIHandler, notifier: Notifier) -> None:
-        super().__init__(config, ai_handler, notifier)
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        ai_handler: AIHandler,
+        telegram_outbound: TelegramOutbound
+    ) -> None:
+        super().__init__(config, ai_handler, telegram_outbound)
         self.module_cfg: Dict[str, Any] = self.config.get("modules", {}).get("deal_finder", {})
 
     def _scrape_candidates(self, url: str, keywords: List[str]) -> List[Dict[str, str]]:
@@ -133,10 +138,9 @@ class DealFinder(BaseModule):
             self.logger.info("AI determined no legitimate deals among candidates. Suppressing alert.")
             return
 
-        self.logger.info("Legitimate deals confirmed by AI. Dispatching priority push alert...")
-        self.notifier.send(
-            message=analysis,
-            title="🔥 AI Deal Alert: Matching Items Found!",
-            priority=4,
-            tags=["moneybag", "fire", "shopping_cart"]
+        self.logger.info("Legitimate deals confirmed by AI. Dispatching Telegram alert...")
+        message_body = f"🔥 *AI Deal Alert: Matching Items Found!*\n\n{analysis}"
+        self.telegram_outbound.send_message(
+            text=message_body,
+            parse_mode="Markdown"
         )

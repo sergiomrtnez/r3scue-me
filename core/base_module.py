@@ -1,7 +1,7 @@
 """
-core/base_module.py - Abstract Base Class for r3scue-me Modules.
+core/base_module.py - Abstract Base Class for DroidServer-AI Modules.
 
-Every module plugin in r3scue-me must inherit from BaseModule and implement
+Every module plugin in DroidServer-AI must inherit from BaseModule and implement
 the required abstract methods. This enforces consistent dependency injection,
 lifecycle management, and error handling across all system modules.
 """
@@ -12,30 +12,35 @@ from typing import Any, Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .ai_handler import AIHandler
-    from .notifier import Notifier
+    from .telegram_outbound import TelegramOutbound
 
 
 class BaseModule(ABC):
     """
-    Abstract Base Class for all r3scue-me automation modules.
+    Abstract Base Class for all DroidServer-AI automation modules.
 
     Enforces the Template Method and Strategy patterns, ensuring every
     module receives its configuration slice, AI inference handler, and
-    notification dispatcher upon initialization.
+    outbound Telegram dispatcher upon initialization.
     """
 
     @abstractmethod
-    def __init__(self, config: Dict[str, Any], ai_handler: "AIHandler", notifier: "Notifier") -> None:
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        ai_handler: "AIHandler",
+        telegram_outbound: "TelegramOutbound"
+    ) -> None:
         """
         Initialize the module instance.
 
         :param config: Dictionary containing system and module-specific configurations.
         :param ai_handler: Unified AI inference provider (local llama.cpp or cloud API).
-        :param notifier: Notification dispatcher (ntfy push service).
+        :param telegram_outbound: Outbound Telegram dispatcher for alerts and digests.
         """
         self.config: Dict[str, Any] = config
         self.ai_handler: "AIHandler" = ai_handler
-        self.notifier: "Notifier" = notifier
+        self.telegram_outbound: "TelegramOutbound" = telegram_outbound
         self.logger: logging.Logger = logging.getLogger(self.__class__.__name__)
 
     @property
@@ -51,8 +56,8 @@ class BaseModule(ABC):
         """
         Execute the core business logic of the module.
 
-        Must be implemented by concrete subclasses. Should handle task retrieval,
-        data scraping or note parsing, AI prompt orchestration, and notification dispatching.
+        Must be implemented by concrete subclasses. Handles task retrieval,
+        data scraping or note parsing, AI prompt orchestration, and outbound dispatching.
         """
         pass
 
@@ -70,12 +75,9 @@ class BaseModule(ABC):
         except Exception as e:
             self.logger.exception(f"Unhandled error during execution of module {self.module_name}: {e}")
             try:
-                self.notifier.send(
-                    message=f"Error in module {self.module_name}: {str(e)}",
-                    title="⚠️ r3scue-me Failure",
-                    priority=4,
-                    tags=["warning", "robot"]
+                self.telegram_outbound.send_message(
+                    text=f"⚠️ *DroidServer-AI Failure*\n\nError in module `{self.module_name}`: {str(e)}"
                 )
             except Exception as notify_err:
-                self.logger.error(f"Failed to deliver failure notification: {notify_err}")
+                self.logger.error(f"Failed to deliver failure notification via Telegram: {notify_err}")
             return False

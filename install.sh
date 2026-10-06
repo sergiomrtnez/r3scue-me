@@ -69,16 +69,26 @@ pip install --upgrade pip
 pip install -r "$SCRIPT_DIR/requirements.txt"
 
 # ------------------------------------------------------------------------------
-# STEP 3: Notification Setup (ntfy)
+# STEP 3: Telegram Bot Setup (Bidirectional Communication)
 # ------------------------------------------------------------------------------
-echo -e "\n${BLUE}[3/6] Configuring Push Notifications (ntfy.sh)...${NC}"
-echo -e "${CYAN}ntfy allows zero-registration push alerts directly to your mobile phone or desktop.${NC}"
-read -rp "Enter your desired ntfy topic name [e.g. r3scue-me-alert-$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)]: " NTFY_TOPIC
-if [ -z "$NTFY_TOPIC" ]; then
-    NTFY_TOPIC="r3scue-me-alert-$(head /dev/urandom | tr -dc a-z0-9 | head -c 6)"
-fi
-echo -e "${GREEN}✓ Selected ntfy topic: ${BOLD}$NTFY_TOPIC${NC}"
-echo -e "  (Subscribe via the ntfy app at: https://ntfy.sh/$NTFY_TOPIC)\n"
+echo -e "\n${BLUE}[3/6] Configuring Telegram Bot Integration...${NC}"
+echo -e "${CYAN}DroidServer-AI uses Telegram for instant UI feedback and outbound reports.${NC}"
+echo -e "1) Create a bot via ${BOLD}@BotFather${NC} on Telegram to obtain your BOT TOKEN."
+echo -e "2) Message ${BOLD}@userinfobot${NC} on Telegram to retrieve your numeric CHAT ID."
+
+read -rp "Enter your Telegram Bot Token: " TELEGRAM_BOT_TOKEN
+while [ -z "$TELEGRAM_BOT_TOKEN" ]; do
+    echo -e "${RED}Bot Token cannot be empty.${NC}"
+    read -rp "Enter your Telegram Bot Token: " TELEGRAM_BOT_TOKEN
+done
+
+read -rp "Enter your Numeric Telegram Chat ID: " TELEGRAM_CHAT_ID
+while [ -z "$TELEGRAM_CHAT_ID" ]; do
+    echo -e "${RED}Chat ID cannot be empty (needed for private security).${NC}"
+    read -rp "Enter your Numeric Telegram Chat ID: " TELEGRAM_CHAT_ID
+done
+
+echo -e "${GREEN}✓ Telegram credentials configured successfully.${NC}\n"
 
 # ------------------------------------------------------------------------------
 # STEP 4: AI Engine Configuration (Cloud API vs. Native llama.cpp)
@@ -329,10 +339,9 @@ cat <<EOF > "$SCRIPT_DIR/config.json"
       "timeout_seconds": 180
     }
   },
-  "notifications": {
-    "server": "https://ntfy.sh",
-    "topic": "$NTFY_TOPIC",
-    "auth_token": null,
+  "telegram": {
+    "bot_token": "$TELEGRAM_BOT_TOKEN",
+    "chat_id": "$TELEGRAM_CHAT_ID",
     "timeout_seconds": 15
   },
   "active_modules": [
@@ -347,8 +356,7 @@ cat <<EOF > "$SCRIPT_DIR/config.json"
     },
     "smart_notes": {
       "inbox_dir": "data/notes_inbox",
-      "vault_dir": "data/notes_vault",
-      "raw_notes": $RAW_NOTES_JSON
+      "vault_dir": "data/notes_vault"
     },
     "deal_finder": {
       "urls": $DEALS_URLS_JSON,
@@ -361,34 +369,42 @@ EOF
 echo -e "${GREEN}✓ Successfully generated config.json!${NC}"
 
 # ------------------------------------------------------------------------------
-# Automation Scheduling (cronie / crontab)
+# Dual-Process Architecture Setup (Producer + Consumer)
 # ------------------------------------------------------------------------------
-echo -e "\n${CYAN}--- Background Execution Setup ---${NC}"
+echo -e "\n${CYAN}--- Background Execution Setup (Dual-Process Architecture) ---${NC}"
 VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 if [ ! -f "$VENV_PYTHON" ]; then
     VENV_PYTHON="$(command -v python || command -v python3)"
 fi
 AGENT_SCRIPT="$SCRIPT_DIR/agent.py"
-LOG_FILE="$SCRIPT_DIR/r3scue-me.log"
+LISTENER_SCRIPT="$SCRIPT_DIR/telegram_listener.py"
+AGENT_LOG="$SCRIPT_DIR/agent_cron.log"
+LISTENER_LOG="$SCRIPT_DIR/telegram_listener.log"
 
-CRON_CMD="*/30 * * * * cd $SCRIPT_DIR && $VENV_PYTHON $AGENT_SCRIPT >> $LOG_FILE 2>&1"
-
+# 1. Schedule Consumer (agent.py) in crontab
+CRON_CMD="*/30 * * * * cd $SCRIPT_DIR && $VENV_PYTHON $AGENT_SCRIPT >> $AGENT_LOG 2>&1"
 if command -v crontab >/dev/null 2>&1; then
-    # Add to crontab if not already registered
-    (crontab -l 2>/dev/null | grep -v "r3scue-me"; echo "$CRON_CMD # r3scue-me") | crontab -
-    echo -e "${GREEN}✓ Crontab configured to execute every 30 minutes using .venv.${NC}"
-    # Start crond daemon if available in Termux
+    (crontab -l 2>/dev/null | grep -v "DroidServer-AI"; echo "$CRON_CMD # DroidServer-AI") | crontab -
+    echo -e "${GREEN}✓ Consumer (agent.py) registered in crontab (every 30 mins).${NC}"
     pgrep crond >/dev/null 2>&1 || crond
 else
-    echo -e "${YELLOW}! crontab command not found. You can execute manually with:${NC}"
-    echo -e "    source .venv/bin/activate && python agent.py"
+    echo -e "${YELLOW}! crontab command not found. Run agent manually: $VENV_PYTHON agent.py${NC}"
 fi
 
+# 2. Launch Producer (telegram_listener.py) in background with nohup
+echo -e "${BLUE}Starting Telegram Listener (Producer) in background...${NC}"
+pkill -f "telegram_listener.py" 2>/dev/null || true
+nohup "$VENV_PYTHON" "$LISTENER_SCRIPT" >> "$LISTENER_LOG" 2>&1 &
+LISTENER_PID=$!
+echo -e "${GREEN}✓ Telegram Listener running in background (PID: $LISTENER_PID).${NC}"
+
 echo -e "\n${GREEN}${BOLD}============================================================${NC}"
-echo -e "${GREEN}${BOLD}        🚀 r3scue-me Installation Completed!                ${NC}"
+echo -e "${GREEN}${BOLD}     🚀 DroidServer-AI Installation Completed!             ${NC}"
 echo -e "${GREEN}${BOLD}============================================================${NC}"
-echo -e "To run an immediate test execution:"
-echo -e "  ${BOLD}source .venv/bin/activate && python agent.py${NC}\n"
-echo -e "To view logs:"
-echo -e "  ${BOLD}tail -f $LOG_FILE${NC}\n"
-echo -e "Subscribed ntfy Topic: ${BOLD}https://ntfy.sh/$NTFY_TOPIC${NC}"
+echo -e "Your Telegram Bot is now listening for messages!"
+echo -e "Open Telegram, start a chat with your bot, and send:"
+echo -e "  ${BOLD}/start${NC} -> View control panel, tasks, and notes."
+echo -e "  ${BOLD}<Any text>${NC} -> Saves a note to inbox for AI processing."
+echo -e "\nLogs:"
+echo -e "  Telegram Listener: ${BOLD}tail -f $LISTENER_LOG${NC}"
+echo -e "  AI Cron Agent:     ${BOLD}tail -f $AGENT_LOG${NC}"

@@ -1,28 +1,34 @@
 """
-modules/smart_notes.py - Semantic Markdown Note Ingestion & Organization.
+modules/smart_notes.py - Semantic Markdown Note Ingestion & Organization (The Consumer).
 
-Monitors an inbox folder or config entries for unstructured raw notes,
-leverages AI to categorize, tag, and reformat them into clean Markdown,
-and stores them organized into a structured local knowledge vault.
+Scheduled by cron via agent.py. Scans data/notes_inbox/ for raw .txt notes
+dropped by telegram_listener.py, leverages AIHandler to categorize and format
+them into clean Markdown, stores them in data/notes_vault/, deletes the raw
+intake files, and dispatches a delivery confirmation via TelegramOutbound.
 """
 
 from datetime import datetime
 import json
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict
 from core.base_module import BaseModule
 from core.ai_handler import AIHandler
-from core.notifier import Notifier
+from core.telegram_outbound import TelegramOutbound
 
 
 class SmartNotes(BaseModule):
     """
-    Automated note ingestion, classification, and Markdown vault organizer.
+    Consumer module that processes raw notes from inbox into a structured Markdown vault.
     """
 
-    def __init__(self, config: Dict[str, Any], ai_handler: AIHandler, notifier: Notifier) -> None:
-        super().__init__(config, ai_handler, notifier)
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        ai_handler: AIHandler,
+        telegram_outbound: TelegramOutbound
+    ) -> None:
+        super().__init__(config, ai_handler, telegram_outbound)
         self.module_cfg: Dict[str, Any] = self.config.get("modules", {}).get("smart_notes", {})
         self.inbox_dir: str = self.module_cfg.get("inbox_dir", "data/notes_inbox")
         self.vault_dir: str = self.module_cfg.get("vault_dir", "data/notes_vault")
@@ -40,37 +46,37 @@ class SmartNotes(BaseModule):
 
     def execute(self) -> None:
         """
-        Ingest unorganized notes, classify via AI, save to Markdown vault, and notify.
+        Ingest unorganized .txt notes, classify via AI, save to Markdown vault, and notify.
         """
+        # Discover all .txt or .md files in the inbox directory
         inbox_files = [
             os.path.join(self.inbox_dir, f)
-            for f in os.listdir(self.inbox_dir)
+            for f in sorted(os.listdir(self.inbox_dir))
             if os.path.isfile(os.path.join(self.inbox_dir, f)) and not f.startswith(".")
         ]
 
-        # Support direct note entries in config if inbox directory is empty
-        config_notes: List[str] = self.module_cfg.get("raw_notes", [])
-        if not inbox_files and not config_notes:
-            self.logger.info("No raw notes found in inbox or configuration to process.")
+        if not inbox_files:
+            self.logger.info("No raw notes found in inbox to process.")
             return
 
-        processed_count = 0
-        summary_titles = []
+        self.logger.info(f"Found {len(inbox_files)} raw note(s) in inbox. Commencing AI processing...")
 
         system_prompt = (
             "You are a Second Brain and Knowledge Management AI specialist. "
             "Given an unorganized, quick raw thought or voice note transcript, "
             "your mission is to organize it into a structured Markdown document.\n"
-            "Respond strictly with valid JSON with the following schema:\n"
+            "Respond strictly with valid JSON matching the following schema:\n"
             "{\n"
             '  "title": "Short descriptive title",\n'
             '  "category": "One overarching category (e.g. Ideas, Projects, Personal, Tech, Finance, Reading)",\n'
             '  "tags": ["tag1", "tag2"],\n'
-            '  "markdown_content": "# Title\\n\\n## Summary\\n...\\n\\n## Action Items / Details\\n..."\n'
+            '  "markdown_content": "# Title\\n\\n## Summary\\n...\\n\\n## Details / Action Items\\n..."\n'
             "}"
         )
 
-        # 1. Process files from inbox
+        processed_count = 0
+        summary_titles = []
+
         for file_path in inbox_files:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
@@ -80,47 +86,34 @@ class SmartNotes(BaseModule):
                     os.remove(file_path)
                     continue
 
-                self.logger.info(f"Processing note from file: {file_path}")
+                self.logger.info(f"Processing inbox note: {os.path.basename(file_path)}")
                 organized_info = self._process_single_note(raw_text, system_prompt)
                 if organized_info:
-                    self._save_to_vault(organized_info)
-                    summary_titles.append(f"{organized_info['title']} ({organized_info['category']})")
+                    vault_path = self._save_to_vault(organized_info)
+                    summary_titles.append(f"• *{organized_info['title']}* (`{organized_info['category']}`)")
                     processed_count += 1
 
-                # Remove processed note from inbox to avoid duplicate ingestion
+                # Clean up raw intake file upon successful processing
                 os.remove(file_path)
 
             except Exception as e:
                 self.logger.error(f"Failed to process inbox file {file_path}: {e}")
 
-        # 2. Process notes passed directly in config
-        if config_notes:
-            for idx, note_text in enumerate(config_notes):
-                if not str(note_text).strip():
-                    continue
-                self.logger.info(f"Processing config raw note #{idx + 1}")
-                organized_info = self._process_single_note(str(note_text).strip(), system_prompt)
-                if organized_info:
-                    self._save_to_vault(organized_info)
-                    summary_titles.append(f"{organized_info['title']} ({organized_info['category']})")
-                    processed_count += 1
-
-            # Clear processed config notes
-            self.module_cfg["raw_notes"] = []
-
         if processed_count > 0:
-            titles_msg = "\n".join(f"• {t}" for t in summary_titles)
-            self.notifier.send(
-                message=f"Successfully organized {processed_count} notes into your vault:\n\n{titles_msg}",
-                title="🧠 Smart Notes Ingested",
-                priority=3,
-                tags=["memo", "brain", "books"]
+            titles_msg = "\n".join(summary_titles)
+            notification_text = (
+                f"🧠 *He organizado {processed_count} nueva(s) nota(s) en tu baúl:*\n\n"
+                f"{titles_msg}"
             )
-            self.logger.info(f"Ingested and organized {processed_count} notes.")
+            self.telegram_outbound.send_message(
+                text=notification_text,
+                parse_mode="Markdown"
+            )
+            self.logger.info(f"Ingested and organized {processed_count} notes into vault.")
 
     def _process_single_note(self, raw_text: str, system_prompt: str) -> Dict[str, Any]:
         """
-        Request AI to structure the note and parse output.
+        Request AI to structure the raw note and parse output JSON.
         """
         user_prompt = f"Raw note to process:\n\n{raw_text}"
         response_text = self.ai_handler.prompt(
@@ -131,7 +124,7 @@ class SmartNotes(BaseModule):
         )
 
         try:
-            # Clean json fences if present
+            # Strip markdown json block fences if present
             cleaned = re.sub(r"^```json\s*", "", response_text.strip(), flags=re.MULTILINE)
             cleaned = re.sub(r"```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
             data = json.loads(cleaned)
@@ -142,8 +135,8 @@ class SmartNotes(BaseModule):
                 "markdown_content": data.get("markdown_content", raw_text)
             }
         except Exception:
-            # Fallback if model fails strict JSON formatting
-            first_line = raw_text.split("\n")[0][:30]
+            # Fallback if model generates non-JSON text
+            first_line = raw_text.split("\n")[0][:30].strip()
             return {
                 "title": first_line or "Quick Note",
                 "category": "Inbox",

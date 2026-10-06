@@ -3,7 +3,8 @@ modules/news_summarizer.py - Static Scraping & RSS News Digest Module.
 
 Fetches headlines and articles from user-provided URLs or RSS feeds using
 lightweight static extraction (feedparser + BeautifulSoup + requests).
-Leverages AI to synthesize key trends into a distraction-free executive summary.
+Leverages AI to synthesize key trends into a distraction-free executive summary
+dispatched via TelegramOutbound.
 """
 
 from typing import Any, Dict, List
@@ -13,7 +14,7 @@ import feedparser
 
 from core.base_module import BaseModule
 from core.ai_handler import AIHandler
-from core.notifier import Notifier
+from core.telegram_outbound import TelegramOutbound
 
 
 class NewsSummarizer(BaseModule):
@@ -21,8 +22,13 @@ class NewsSummarizer(BaseModule):
     Automated lightweight news curator and synthesizer.
     """
 
-    def __init__(self, config: Dict[str, Any], ai_handler: AIHandler, notifier: Notifier) -> None:
-        super().__init__(config, ai_handler, notifier)
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        ai_handler: AIHandler,
+        telegram_outbound: TelegramOutbound
+    ) -> None:
+        super().__init__(config, ai_handler, telegram_outbound)
         self.module_cfg: Dict[str, Any] = self.config.get("modules", {}).get("news_summarizer", {})
 
     def _fetch_content(self, url: str) -> str:
@@ -42,7 +48,6 @@ class NewsSummarizer(BaseModule):
                 for entry in feed.entries[:5]:  # Top 5 articles
                     title = getattr(entry, "title", "Untitled")
                     summary = getattr(entry, "summary", "")
-                    # Strip any raw HTML in summary
                     clean_summary = BeautifulSoup(summary, "html.parser").get_text(strip=True)
                     extracted_text.append(f"Title: {title}\nSummary: {clean_summary[:300]}")
                 return "\n\n".join(extracted_text)
@@ -54,11 +59,10 @@ class NewsSummarizer(BaseModule):
 
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Remove unwanted tags to reduce memory usage and noise
+            # Decompose heavy or non-informative tags
             for element in soup(["script", "style", "nav", "footer", "aside", "form"]):
                 element.decompose()
 
-            # Target common headline and paragraph tags
             headlines = [h.get_text(strip=True) for h in soup.find_all(["h1", "h2", "h3"])[:8]]
             paragraphs = [p.get_text(strip=True) for p in soup.find_all("p")[:6] if len(p.get_text(strip=True)) > 40]
 
@@ -76,7 +80,7 @@ class NewsSummarizer(BaseModule):
 
     def execute(self) -> None:
         """
-        Retrieve news sources, summarize key events via AI, and notify user.
+        Retrieve news sources, summarize key events via AI, and notify user via Telegram.
         """
         urls: List[str] = self.module_cfg.get("urls", [])
         if not urls:
@@ -102,7 +106,7 @@ class NewsSummarizer(BaseModule):
             "1. Group updates into 3 to 5 core bullet points.\n"
             "2. Highlight 'What happened' and 'Why it matters' for each.\n"
             "3. Filter out promotional content, clickbait, and duplicate stories.\n"
-            "4. Keep it concise, structured, and mobile-friendly with emojis."
+            "4. Format cleanly for Telegram using Markdown and emojis."
         )
 
         user_prompt = f"Here is the raw extracted information from today's sources:\n\n{combined_news}"
@@ -115,10 +119,9 @@ class NewsSummarizer(BaseModule):
             max_tokens=700
         )
 
-        self.logger.info("Delivering news briefing via ntfy...")
-        self.notifier.send(
-            message=summary,
-            title="📰 Daily Executive News Digest",
-            priority=3,
-            tags=["newspaper", "globe_with_meridians"]
+        message_body = f"📰 *Daily Executive News Digest*\n\n{summary}"
+        self.logger.info("Delivering news briefing via Telegram...")
+        self.telegram_outbound.send_message(
+            text=message_body,
+            parse_mode="Markdown"
         )

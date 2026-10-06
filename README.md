@@ -24,44 +24,54 @@
 
 ---
 
-## 🏛 Architectural Overview
+## 🏛 Architectural Overview: Dual-Process (Producer-Consumer)
 
-r3scue-me uses a decoupled, pluggable architecture. The central orchestrator (`agent.py`) coordinates execution cycles, injects dependencies (`AIHandler` and `Notifier`), and loads independent modules deriving from `BaseModule`.
+DroidServer-AI uses a **Dual-Process (Producer-Consumer)** design pattern to achieve zero-latency UX on mobile while protecting the Android device's limited RAM from heavy continuous LLM loads:
+
+1. **The Producer (`telegram_listener.py`)**: Runs continuously via long-polling using `pyTelegramBotAPI`. It has **strict zero-AI imports** and a memory footprint of ~15-20 MB. It responds instantly to `/start` with interactive inline buttons and persists incoming thoughts/notes into `data/notes_inbox/note_<timestamp>.txt`.
+2. **The Consumer (`agent.py`)**: Runs on a periodic schedule (via `cronie`). It initializes `AIHandler` and `TelegramOutbound`, scans the inbox, runs heavy inference (via native `llama.cpp` or API), archives structured Markdown in `data/notes_vault/`, and sends notifications directly to the user's Telegram chat.
 
 ```mermaid
 flowchart TD
-    subgraph Host["Android Device (Termux)"]
-        CRON["cronie / Crontab"] -->|Triggers every 30m| AGENT["agent.py (Orchestrator)"]
-        CONFIG["config.json"] -->|Config slice| AGENT
+    USER["📱 User (Telegram App)"]
 
-        subgraph Core["Core Engine (Dependency Injection)"]
-            AIH["AIHandler"]
-            NOTIF["Notifier"]
+    subgraph Producer["Process 1: The Producer (telegram_listener.py)"]
+        POLL["Long Polling Loop (telebot)"]
+        AUTH["Security Filter (chat_id)"]
+        UI["Zero-Lag UI: Inline Buttons (/start)"]
+        SAVE["Instant Note Ingestion"]
+        INBOX[("data/notes_inbox/*.txt")]
+    end
+
+    USER <-->|Bidirectional Chat| POLL
+    POLL --> AUTH
+    AUTH --> UI
+    AUTH --> SAVE
+    SAVE -->|Persists raw thought| INBOX
+
+    subgraph Consumer["Process 2: The Consumer (agent.py - cronie)"]
+        CRON["cronie (Every 30m)"] --> AGENT["agent.py"]
+        CONFIG["config.json"] --> AGENT
+        OUTBOUND["TelegramOutbound (HTTP POST)"]
+        AI["AIHandler (llama.cpp / Cloud API)"]
+
+        subgraph Modules["Modular Plugins"]
+            M_NOTES["smart_notes.py (Consumes Inbox)"]
+            M_TASKS["task_reminder.py"]
+            M_NEWS["news_summarizer.py"]
+            M_DEALS["deal_finder.py"]
         end
 
-        AGENT --> AIH
-        AGENT --> NOTIF
-
-        subgraph Modules["Dynamic Modules (BaseModule Subclasses)"]
-            M1["task_reminder.py"]
-            M2["news_summarizer.py"]
-            M3["smart_notes.py"]
-            M4["deal_finder.py"]
-            MCUST["custom_module.py"]
-        end
-
-        AGENT -->|Dynamically Loads & Executes| Modules
+        AGENT --> AI
+        AGENT --> OUTBOUND
+        AGENT --> Modules
     end
 
-    subgraph Inference["AI Inference Layer"]
-        AIH -->|Local Mode| LLAMA["Native llama.cpp (CPU)"]
-        AIH -->|API Mode| CLOUD["Cloud REST API (OpenRouter/Groq/OpenAI)"]
-    end
-
-    subgraph Alerts["Notification Dispatch"]
-        NOTIF -->|HTTP POST| NTFY["ntfy.sh / Self-Hosted ntfy"]
-        NTFY -->|Push Alert| PHONE["User Phone / Workstation"]
-    end
+    INBOX -->|Batch Read & Clean| M_NOTES
+    M_NOTES -->|Inference & Structuring| AI
+    M_NOTES -->|Stores Markdown| VAULT[("data/notes_vault/*.md")]
+    M_NOTES -->|Delivery Confirmation| OUTBOUND
+    OUTBOUND -->|HTTP REST Push| USER
 ```
 
 ### Module Class Hierarchy
@@ -72,9 +82,9 @@ classDiagram
         <<abstract>>
         +dict config
         +AIHandler ai_handler
-        +Notifier notifier
+        +TelegramOutbound telegram_outbound
         +Logger logger
-        +__init__(config, ai_handler, notifier)
+        +__init__(config, ai_handler, telegram_outbound)
         +execute()*
         +run() bool
         +module_name() str
@@ -96,15 +106,11 @@ classDiagram
         -_scrape_candidates(url, keywords)
         +execute()
     }
-    class CustomModule {
-        +execute()
-    }
 
     BaseModule <|-- TaskReminder
     BaseModule <|-- NewsSummarizer
     BaseModule <|-- SmartNotes
     BaseModule <|-- DealFinder
-    BaseModule <|-- CustomModule
 ```
 
 ---
@@ -232,15 +238,13 @@ The entire runtime behavior is driven by `config.json`. Below is a comprehensive
       "timeout_seconds": 180
     }
   },
-  "notifications": {
-    "server": "https://ntfy.sh",
-    "topic": "r3scue-me-mydevice-alerts",
-    "auth_token": null,
+  "telegram": {
+    "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+    "chat_id": "987654321",
     "timeout_seconds": 15
   },
   "active_modules": [
-    "task_reminder",
-    "news_summarizer"
+    "smart_notes"
   ],
   "modules": {
     "task_reminder": {
@@ -257,8 +261,7 @@ The entire runtime behavior is driven by `config.json`. Below is a comprehensive
     },
     "smart_notes": {
       "inbox_dir": "data/notes_inbox",
-      "vault_dir": "data/notes_vault",
-      "raw_notes": []
+      "vault_dir": "data/notes_vault"
     },
     "deal_finder": {
       "urls": [
@@ -276,20 +279,45 @@ The entire runtime behavior is driven by `config.json`. Below is a comprehensive
 
 ---
 
+## 🎛️ Telegram Interactive Control Center
+
+The Producer process (`telegram_listener.py`) provides an interactive dashboard inside Telegram with zero latency and zero continuous AI load. Sending `/start` presents an inline keyboard providing instant status checks for all configured modules:
+
+```text
+┌─────────────────┬─────────────────┐
+│     📝 Notas    │    📋 Tareas    │
+├─────────────────┼─────────────────┤
+│   📰 Noticias   │    🔥 Chollos   │
+├─────────────────┴─────────────────┤
+│         ⚡ Estado Servidor         │
+└───────────────────────────────────┘
+```
+
+| Interactive Action | Callback Data | Description |
+| :--- | :--- | :--- |
+| **📝 Notas** | `cmd_view_notes` | Reports the count of raw `.txt` notes waiting in `data/notes_inbox/` plus the list of organized `.md` notes currently in `data/notes_vault/`. |
+| **📋 Tareas** | `cmd_view_tasks` | Reads and lists current pending tasks from `config.json` in real time. |
+| **📰 Noticias** | `cmd_view_news` | Displays all monitored RSS feeds and news URLs configured for the daily digest. |
+| **🔥 Chollos** | `cmd_view_deals` | Displays the keywords tracked and e-commerce/forum search URLs monitored by DealFinder. |
+| **⚡ Estado Servidor** | `cmd_view_status` | Returns a live diagnostic card: active AI backend (`API` or `LOCAL`), model name, active cron modules, and listener RAM usage (~18 MB). |
+| **Direct Note Ingestion** | `<any text>` | Any text message sent to the bot is instantly saved to `data/notes_inbox/note_<timestamp>.txt` for batch processing in the next cron run. |
+
+---
+
 ## 📦 Built-in Modules
 
 | Module | Identifier | Description | Dependencies |
 | :--- | :--- | :--- | :--- |
-| **Task Reminder** | `task_reminder` | Prioritizes daily tasks via the Eisenhower Matrix, detects blockers, and pushes an actionable morning briefing. | Core |
+| **Smart Notes** | `smart_notes` | Consumes raw `.txt` notes created by `telegram_listener.py`, categorizes them with AI, and stores structured Markdown in `data/notes_vault/`. | Core |
+| **Task Reminder** | `task_reminder` | Prioritizes daily tasks via the Eisenhower Matrix, detects blockers, and pushes an actionable morning briefing to Telegram. | Core |
 | **News Summarizer** | `news_summarizer` | Scrapes RSS/Atom feeds and static web pages, using AI to distill an executive 3-5 bullet point digest. | `feedparser`, `bs4` |
-| **Smart Notes** | `smart_notes` | Ingests unorganized thoughts/transcripts from `data/notes_inbox/`, categorizes them into topics, and generates formatted Markdown files in `data/notes_vault/`. | Core |
 | **Deal Finder** | `deal_finder` | Scrapes listings using lightweight static HTML parsing (no Selenium/Chromium) and uses AI to discard false positives. | `bs4`, `requests` |
 
 ---
 
 ## 🛠 Developer Guide: Creating Custom Modules
 
-r3scue-me was designed from the ground up for open-source extension. Any new module requires just a single `.py` file placed in the `modules/` directory.
+DroidServer-AI was designed from the ground up for open-source extension. Any new module requires just a single `.py` file placed in the `modules/` directory.
 
 ### Step 1: Subclass `BaseModule`
 
@@ -304,7 +332,7 @@ import shutil
 from typing import Any, Dict
 from core.base_module import BaseModule
 from core.ai_handler import AIHandler
-from core.notifier import Notifier
+from core.telegram_outbound import TelegramOutbound
 
 
 class SystemHealth(BaseModule):
@@ -312,8 +340,13 @@ class SystemHealth(BaseModule):
     Monitors device storage and memory, using AI to recommend cleanup steps.
     """
 
-    def __init__(self, config: Dict[str, Any], ai_handler: AIHandler, notifier: Notifier) -> None:
-        super().__init__(config, ai_handler, notifier)
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        ai_handler: AIHandler,
+        telegram_outbound: TelegramOutbound
+    ) -> None:
+        super().__init__(config, ai_handler, telegram_outbound)
         self.module_cfg = self.config.get("modules", {}).get("system_health", {})
 
     def execute(self) -> None:
@@ -336,12 +369,10 @@ class SystemHealth(BaseModule):
             max_tokens=150
         )
 
-        # 3. Dispatch push notification
-        self.notifier.send(
-            message=f"Storage: {free_gb}GB / {total_gb}GB free.\n\nAI Diagnostic:\n{analysis}",
-            title="📊 Server Health Status",
-            priority=2,
-            tags=["chart_with_upwards_trend", "iphone"]
+        # 3. Dispatch outbound Telegram message
+        self.telegram_outbound.send_message(
+            text=f"📊 *Server Health Status*\n\nStorage: {free_gb}GB / {total_gb}GB free.\n\n*AI Diagnostic:*\n{analysis}",
+            parse_mode="Markdown"
         )
 ```
 
@@ -363,6 +394,7 @@ Add the module identifier to `active_modules`:
 ### Step 3: Run It!
 
 ```bash
+source .venv/bin/activate
 python agent.py --module system_health
 ```
 
@@ -373,17 +405,18 @@ The orchestrator dynamically imports the file, verifies that it is a subclass of
 ## 💎 SOLID Design Principles in Action
 
 * **S (Single Responsibility Principle)**:
+  * `telegram_listener.py` (Producer) handles only Telegram polling, inline UI responses, and note ingestion into `data/notes_inbox/`. Zero AI.
+  * `TelegramOutbound` handles only HTTP REST message delivery to Telegram.
   * `AIHandler` handles only model communication and payload formatting.
-  * `Notifier` handles only HTTP push notification transport.
-  * Each module handles only its specific domain logic (tasks, news, notes, deals).
+  * Each module in `modules/` handles only its specific domain logic.
 * **O (Open/Closed Principle)**:
-  * Adding new features does not require altering `agent.py` or `core/`. New capabilities are added solely by dropping new classes into `modules/`.
+  * Adding new features does not require altering `agent.py`, `telegram_listener.py`, or `core/`. New capabilities are added solely by dropping new classes into `modules/`.
 * **L (Liskov Substitution Principle)**:
   * Any module inheriting from `BaseModule` can replace any other module seamlessly without modifying the orchestrator's dispatch logic.
 * **I (Interface Segregation Principle)**:
   * `BaseModule` exposes only the essential abstract contract (`execute`) and wrapper methods (`run`), avoiding bloated interfaces.
 * **D (Dependency Inversion Principle)**:
-  * Modules depend on abstractions (`AIHandler`, `Notifier`), not concrete API implementations or hardcoded endpoints.
+  * Modules depend on abstractions (`AIHandler`, `TelegramOutbound`), not concrete low-level implementations.
 
 ---
 
@@ -392,19 +425,15 @@ The orchestrator dynamically imports the file, verifies that it is a subclass of
 ### 1. `termux-wake-lock: command not found`
 Ensure you have installed the **Termux:API** package from F-Droid, and run `pkg install termux-api`.
 
-### 2. `OutOfMemoryError` during native `llama.cpp` compilation
-If `cmake --build` fails with an Out-Of-Memory error, limit compiler parallelism:
-```bash
-cmake --build build -j1
-```
+### 2. How do I get my Telegram Bot Token and Chat ID?
+* Message **@BotFather** on Telegram and type `/newbot` to get your `bot_token`.
+* Message **@userinfobot** on Telegram to obtain your numeric `chat_id`.
 
 ### 3. Background process stopped after several hours
 Check whether Android put Termux to sleep:
 * Run `termux-wake-lock` again.
 * Ensure battery optimization is disabled for both **Termux** and **Termux:API**.
-
-### 4. How do I receive notifications?
-Download the official **ntfy** client for Android or iOS from the App Store or Google Play / F-Droid, and subscribe to the topic configured in `config.json` (e.g. `https://ntfy.sh/your-topic`).
+* Check listener logs with `tail -f telegram_listener.log`.
 
 ---
 

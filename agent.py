@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-agent.py - Main Orchestrator for r3scue-me.
+agent.py - Main Cron Orchestrator for DroidServer-AI (The Consumer Engine).
 
-Loads system configuration, initializes the core AIHandler and Notifier dependencies,
+Loads system configuration, initializes AIHandler and TelegramOutbound,
 dynamically discovers and validates automation modules inheriting from BaseModule,
-and executes them according to the configured schedule or CLI triggers.
+and executes them sequentially without locking the system.
 """
 
 import argparse
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Type
 
 from core.base_module import BaseModule
 from core.ai_handler import AIHandler
-from core.notifier import Notifier
+from core.telegram_outbound import TelegramOutbound
 
 # Configure root logging for Termux / Linux stdout and log files
 logging.basicConfig(
@@ -26,7 +26,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-logger = logging.getLogger("r3scue-me")
+logger = logging.getLogger("DroidServer-Agent")
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -49,8 +49,8 @@ def load_config(config_path: str) -> Dict[str, Any]:
 def discover_module_class(module_name: str) -> Type[BaseModule]:
     """
     Dynamically import a module file and retrieve the class inheriting from BaseModule.
-    
-    :param module_name: String identifier (e.g., 'task_reminder' or 'news_summarizer').
+
+    :param module_name: String identifier (e.g., 'task_reminder' or 'smart_notes').
     :return: Class type extending BaseModule.
     :raises: ImportError or TypeError if no valid BaseModule subclass is found.
     """
@@ -74,10 +74,10 @@ def discover_module_class(module_name: str) -> Type[BaseModule]:
 
 def main() -> None:
     """
-    CLI Entrypoint and orchestrator loop.
+    CLI Entrypoint and orchestrator loop for periodic cron execution.
     """
     parser = argparse.ArgumentParser(
-        description="r3scue-me: Modular Autonomous Automation Server for Android/Linux"
+        description="DroidServer-AI: Modular AI Automation Engine for Android/Linux"
     )
     parser.add_argument(
         "--config", "-c",
@@ -86,7 +86,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--module", "-m",
-        help="Override config and execute a specific module by name (e.g., 'task_reminder')"
+        help="Override config and execute a specific module by name (e.g., 'smart_notes')"
     )
     parser.add_argument(
         "--list-modules", "-l",
@@ -104,7 +104,7 @@ def main() -> None:
     ]
 
     if args.list_modules:
-        print("Available r3scue-me Modules:")
+        print("Available DroidServer-AI Modules:")
         for m in sorted(available_modules):
             print(f"  - {m}")
         sys.exit(0)
@@ -114,7 +114,7 @@ def main() -> None:
     # Initialize Core Service Singletons
     try:
         ai_handler = AIHandler(config.get("ai", {}))
-        notifier = Notifier(config.get("notifications", {}))
+        telegram_outbound = TelegramOutbound(config.get("telegram", {}))
     except Exception as e:
         logger.critical(f"Failed to initialize core dependencies: {e}")
         sys.exit(1)
@@ -124,7 +124,6 @@ def main() -> None:
     if args.module:
         modules_to_run = [args.module]
     else:
-        # Check active_modules list or active_module scalar in config
         active = config.get("active_modules") or config.get("active_module")
         if isinstance(active, list):
             modules_to_run = active
@@ -140,7 +139,7 @@ def main() -> None:
         logger.info(f"--- Launching Module: {mod_name} ---")
         try:
             module_class = discover_module_class(mod_name)
-            instance = module_class(config, ai_handler, notifier)
+            instance = module_class(config, ai_handler, telegram_outbound)
             success = instance.run()
             if not success:
                 overall_success = False

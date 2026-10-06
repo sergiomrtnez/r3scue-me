@@ -3,26 +3,25 @@
     "mode": "api",
     "api": {
       "base_url": "https://openrouter.ai/api/v1",
-      "api_key": "YOUR_API_KEY_HERE",
+      "api_key": "YOUR_AI_API_KEY_HERE",
       "model": "qwen/qwen-2.5-7b-instruct",
       "timeout_seconds": 60
     },
     "local": {
       "binary_path": "/data/data/com.termux/files/home/llama.cpp/build/bin/llama-cli",
-      "model_path": "/data/data/com.termux/files/home/r3scue-me/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "model_path": "/data/data/com.termux/files/home/DroidServer-AI/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
       "threads": 4,
       "context_size": 2048,
       "timeout_seconds": 180
     }
   },
-  "notifications": {
-    "server": "https://ntfy.sh",
-    "topic": "r3scue-me-alerts-change-me",
-    "auth_token": null,
+  "telegram": {
+    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN_HERE",
+    "chat_id": "YOUR_NUMERIC_TELEGRAM_CHAT_ID",
     "timeout_seconds": 15
   },
   "active_modules": [
-    "task_reminder"
+    "smart_notes"
   ],
   "modules": {
     "task_reminder": {
@@ -40,8 +39,7 @@
     },
     "smart_notes": {
       "inbox_dir": "data/notes_inbox",
-      "vault_dir": "data/notes_vault",
-      "raw_notes": []
+      "vault_dir": "data/notes_vault"
     },
     "deal_finder": {
       "urls": [

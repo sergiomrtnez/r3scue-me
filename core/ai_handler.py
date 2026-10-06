@@ -1,0 +1,173 @@
+"""
+core/ai_handler.py - Unified AI Inference Interface.
+
+Provides a decoupled abstraction layer supporting both cloud REST APIs
+(OpenAI-compatible endpoints like OpenRouter, Groq, DeepSeek, OpenAI)
+and local offline inference running native llama.cpp binaries inside Termux.
+"""
+
+import json
+import logging
+import os
+import subprocess
+from typing import Any, Dict, Optional
+import requests
+
+
+class AIHandler:
+    """
+    Unified AI inference handler supporting both API-based and local execution models.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        """
+        Initialize the AI Handler from system configuration.
+
+        :param config: The 'ai' configuration block from config.json.
+        """
+        self.config: Dict[str, Any] = config
+        self.mode: str = self.config.get("mode", "api").lower()
+        self.logger: logging.Logger = logging.getLogger(self.__class__.__name__)
+
+        if self.mode not in ("api", "local"):
+            raise ValueError(f"Unsupported AI mode: '{self.mode}'. Must be 'api' or 'local'.")
+
+        self.logger.info(f"AIHandler initialized with mode: {self.mode}")
+
+    def prompt(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 512
+    ) -> str:
+        """
+        Send a prompt to the configured AI engine and return the textual response.
+
+        :param user_prompt: Main text instruction or question for the model.
+        :param system_prompt: Optional persona or instruction constraint.
+        :param temperature: Generation randomness (0.0 to 1.0).
+        :param max_tokens: Maximum number of tokens to generate.
+        :return: Extracted text response from the model.
+        """
+        if self.mode == "api":
+            return self._query_api(user_prompt, system_prompt, temperature, max_tokens)
+        else:
+            return self._query_local(user_prompt, system_prompt, temperature, max_tokens)
+
+    def _query_api(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str],
+        temperature: float,
+        max_tokens: int
+    ) -> str:
+        """
+        Dispatch prompt to an OpenAI-compatible REST API.
+        """
+        api_config = self.config.get("api", {})
+        base_url = api_config.get("base_url", "https://openrouter.ai/api/v1").rstrip("/")
+        api_key = api_config.get("api_key", os.getenv("AI_API_KEY", ""))
+        model = api_config.get("model", "qwen/qwen-2.5-7b-instruct")
+        timeout_seconds = api_config.get("timeout_seconds", 60)
+
+        if not api_key:
+            raise ValueError("API Key is missing in configuration (ai.api.api_key) or AI_API_KEY env var.")
+
+        endpoint = f"{base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "r3scue-me/1.0"
+        }
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+
+        self.logger.debug(f"Calling REST API: {endpoint} with model: {model}")
+        try:
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=timeout_seconds
+            )
+            response.raise_for_status()
+            data = response.json()
+            generated_content = data["choices"][0]["message"]["content"].strip()
+            return generated_content
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"HTTP request error during AI API query: {e}")
+            raise RuntimeError(f"AI API request failed: {e}") from e
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            self.logger.error(f"Malformed response payload from AI API: {e}")
+            raise RuntimeError(f"Unexpected response format from AI API: {e}") from e
+
+    def _query_local(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str],
+        temperature: float,
+        max_tokens: int
+    ) -> str:
+        """
+        Execute prompt via native llama.cpp binary in Termux subprocess.
+        """
+        local_config = self.config.get("local", {})
+        binary_path = local_config.get("binary_path", "/data/data/com.termux/files/home/llama.cpp/build/bin/llama-cli")
+        model_path = local_config.get("model_path", "")
+        threads = local_config.get("threads", 4)
+        context_size = local_config.get("context_size", 2048)
+        timeout_seconds = local_config.get("timeout_seconds", 180)
+
+        if not os.path.isfile(binary_path):
+            raise FileNotFoundError(f"Local llama.cpp binary not found at: {binary_path}")
+        if not os.path.isfile(model_path):
+            raise FileNotFoundError(f"Model GGUF file not found at: {model_path}")
+
+        # Construct prompt compatible with ChatML / standard instruct formats
+        full_prompt = ""
+        if system_prompt:
+            full_prompt += f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
+        full_prompt += f"<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
+
+        cmd = [
+            binary_path,
+            "-m", model_path,
+            "-p", full_prompt,
+            "-n", str(max_tokens),
+            "--temp", str(temperature),
+            "-c", str(context_size),
+            "-t", str(threads),
+            "--no-display-prompt"
+        ]
+
+        self.logger.debug(f"Spawning local llama.cpp process: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout_seconds,
+                check=True
+            )
+            raw_output = result.stdout.strip()
+            # Clean possible trailing ChatML tokens or special tags
+            cleaned_output = raw_output.replace("<|im_end|>", "").strip()
+            return cleaned_output
+        except subprocess.TimeoutExpired as e:
+            self.logger.error(f"Local llama.cpp inference timed out after {timeout_seconds}s")
+            raise RuntimeError(f"Local inference timeout: {e}") from e
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Local llama.cpp execution failed (exit {e.returncode}): {e.stderr}")
+            raise RuntimeError(f"Local llama.cpp execution error: {e.stderr}") from e

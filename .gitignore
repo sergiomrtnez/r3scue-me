@@ -1,0 +1,29 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / C++ build outputs
+build/
+bin/
+*.o
+*.a
+*.so
+
+# Models and large binaries
+models/*.gguf
+models/*.bin
+
+# Data and logs
+*.log
+data/notes_inbox/*
+!data/notes_inbox/.gitkeep
+data/notes_vault/*
+!data/notes_vault/.gitkeep
+
+# Environment and secrets
+config.json
+.env
+.venv/
+env/
+venv/

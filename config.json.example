@@ -1,0 +1,57 @@
+{
+  "ai": {
+    "mode": "api",
+    "api": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "YOUR_API_KEY_HERE",
+      "model": "qwen/qwen-2.5-7b-instruct",
+      "timeout_seconds": 60
+    },
+    "local": {
+      "binary_path": "/data/data/com.termux/files/home/llama.cpp/build/bin/llama-cli",
+      "model_path": "/data/data/com.termux/files/home/r3scue-me/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "threads": 4,
+      "context_size": 2048,
+      "timeout_seconds": 180
+    }
+  },
+  "notifications": {
+    "server": "https://ntfy.sh",
+    "topic": "r3scue-me-alerts-change-me",
+    "auth_token": null,
+    "timeout_seconds": 15
+  },
+  "active_modules": [
+    "task_reminder"
+  ],
+  "modules": {
+    "task_reminder": {
+      "tasks": [
+        "Review Pull Request #42 on GitHub",
+        "Back up Termux configuration to NAS",
+        "Draft system architecture RFC for client project"
+      ]
+    },
+    "news_summarizer": {
+      "urls": [
+        "https://news.ycombinator.com/rss",
+        "https://feeds.arstechnica.com/arstechnica/index"
+      ]
+    },
+    "smart_notes": {
+      "inbox_dir": "data/notes_inbox",
+      "vault_dir": "data/notes_vault",
+      "raw_notes": []
+    },
+    "deal_finder": {
+      "urls": [
+        "https://news.ycombinator.com/show"
+      ],
+      "keywords": [
+        "open source",
+        "framework",
+        "release"
+      ]
+    }
+  }
+}

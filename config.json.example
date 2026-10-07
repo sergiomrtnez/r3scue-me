@@ -1,4 +1,5 @@
 {
+  "cron_frequency": 30,
   "ai": {
     "mode": "api",
     "api": {
@@ -12,7 +13,8 @@
       "model_path": "/data/data/com.termux/files/home/DroidServer-AI/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
       "threads": 4,
       "context_size": 2048,
-      "timeout_seconds": 180
+      "timeout_seconds": 180,
+      "extra_args": []
     }
   },
   "telegram": {

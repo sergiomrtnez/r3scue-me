@@ -317,12 +317,40 @@ case "$MOD_CHOICE" in
 esac
 
 # ------------------------------------------------------------------------------
-# STEP 6: config.json Generation
+# STEP 6: Cron Frequency + config.json Generation
 # ------------------------------------------------------------------------------
-echo -e "\n${BLUE}[6/6] Generating config.json and setting up background runner...${NC}"
+echo -e "\n${BLUE}[6/6] Configuring agent schedule, config.json and background runner...${NC}"
+
+# Allowed intervals (must match VALID_CRON_MINUTES in telegram_listener.py).
+# Only values that produce an *exact* period in cron syntax are accepted.
+VALID_CRON_MINUTES="1 2 3 4 5 6 10 12 15 20 30 60 120 180 240 360 480 720 1440"
+
+echo -e "${CYAN}How often should the AI agent (agent.py) run?${NC}"
+echo "  Common values: 15, 30, 60 (minutes). Allowed: ${VALID_CRON_MINUTES// /, }"
+while true; do
+    read -rp "Frequency in minutes [Default: 30]: " CRON_FREQUENCY
+    CRON_FREQUENCY=${CRON_FREQUENCY:-30}
+    if [[ "$CRON_FREQUENCY" =~ ^[0-9]+$ ]] && [[ " $VALID_CRON_MINUTES " == *" $CRON_FREQUENCY "* ]]; then
+        break
+    fi
+    echo -e "${RED}Invalid value '${CRON_FREQUENCY}'. Choose one of: ${VALID_CRON_MINUTES// /, }${NC}"
+done
+
+# Translate minutes -> cron schedule expression
+if [ "$CRON_FREQUENCY" -lt 60 ]; then
+    CRON_SCHEDULE="*/$CRON_FREQUENCY * * * *"
+elif [ "$CRON_FREQUENCY" -eq 60 ]; then
+    CRON_SCHEDULE="0 * * * *"
+elif [ "$CRON_FREQUENCY" -eq 1440 ]; then
+    CRON_SCHEDULE="0 0 * * *"
+else
+    CRON_SCHEDULE="0 */$(( CRON_FREQUENCY / 60 )) * * *"
+fi
+echo -e "${GREEN}✓ Agent will run every ${CRON_FREQUENCY} minutes (cron: '${CRON_SCHEDULE}').${NC}"
 
 cat <<EOF > "$SCRIPT_DIR/config.json"
 {
+  "cron_frequency": $CRON_FREQUENCY,
   "ai": {
     "mode": "$AI_MODE",
     "api": {
@@ -336,7 +364,8 @@ cat <<EOF > "$SCRIPT_DIR/config.json"
       "model_path": "$LOCAL_MODEL_PATH",
       "threads": $LOCAL_THREADS,
       "context_size": 2048,
-      "timeout_seconds": 180
+      "timeout_seconds": 180,
+      "extra_args": []
     }
   },
   "telegram": {
@@ -382,10 +411,11 @@ AGENT_LOG="$SCRIPT_DIR/agent_cron.log"
 LISTENER_LOG="$SCRIPT_DIR/telegram_listener.log"
 
 # 1. Schedule Consumer (agent.py) in crontab
-CRON_CMD="*/30 * * * * cd $SCRIPT_DIR && $VENV_PYTHON $AGENT_SCRIPT >> $AGENT_LOG 2>&1"
+CRON_CMD="$CRON_SCHEDULE cd $SCRIPT_DIR && $VENV_PYTHON $AGENT_SCRIPT >> $AGENT_LOG 2>&1"
 if command -v crontab >/dev/null 2>&1; then
     (crontab -l 2>/dev/null | grep -v "DroidServer-AI"; echo "$CRON_CMD # DroidServer-AI") | crontab -
-    echo -e "${GREEN}✓ Consumer (agent.py) registered in crontab (every 30 mins).${NC}"
+    echo -e "${GREEN}✓ Consumer (agent.py) registered in crontab (every ${CRON_FREQUENCY} mins).${NC}"
+    echo -e "${CYAN}  Tip: change it anytime from Telegram with /setcron <minutes>${NC}"
     pgrep crond >/dev/null 2>&1 || crond
 else
     echo -e "${YELLOW}! crontab command not found. Run agent manually: $VENV_PYTHON agent.py${NC}"
@@ -405,6 +435,8 @@ echo -e "Your Telegram Bot is now listening for messages!"
 echo -e "Open Telegram, start a chat with your bot, and send:"
 echo -e "  ${BOLD}/start${NC} -> View control panel, tasks, and notes."
 echo -e "  ${BOLD}<Any text>${NC} -> Saves a note to inbox for AI processing."
+echo -e "  ${BOLD}/clear${NC} -> Deletes pending notes from the inbox."
+echo -e "  ${BOLD}/setcron <min>${NC} -> Changes the agent execution frequency."
 echo -e "\nLogs:"
 echo -e "  Telegram Listener: ${BOLD}tail -f $LISTENER_LOG${NC}"
 echo -e "  AI Cron Agent:     ${BOLD}tail -f $AGENT_LOG${NC}"

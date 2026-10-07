@@ -9,6 +9,7 @@ and local offline inference running native llama.cpp binaries inside Termux.
 import json
 import logging
 import os
+import re
 import subprocess
 from typing import Any, Dict, Optional
 import requests
@@ -148,26 +149,58 @@ class AIHandler:
             "--temp", str(temperature),
             "-c", str(context_size),
             "-t", str(threads),
-            "--no-display-prompt"
+            "--no-display-prompt",
+            # Disable llama.cpp internal logger (model loading, sampler info,
+            # perf counters such as "Prompt: 42.1 t/s"). llama-cli has no '-q'.
+            "--log-disable",
         ]
+        # Optional user-provided flags (e.g. ["-no-cnv"] on builds that default
+        # to interactive conversation mode).
+        extra_args = local_config.get("extra_args", [])
+        if isinstance(extra_args, list):
+            cmd.extend(str(arg) for arg in extra_args)
 
         self.logger.debug(f"Spawning local llama.cpp process: {' '.join(cmd)}")
         try:
             result = subprocess.run(
                 cmd,
+                # No stdin: if the binary ever drops into interactive mode it
+                # receives EOF immediately instead of hanging until timeout.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                # Telemetry / diagnostics go to stderr: discard them entirely so
+                # they can never leak into the AI response or fill a pipe buffer.
+                stderr=subprocess.DEVNULL,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout_seconds,
                 check=True
             )
-            raw_output = result.stdout.strip()
-            # Clean possible trailing ChatML tokens or special tags
-            cleaned_output = raw_output.replace("<|im_end|>", "").strip()
-            return cleaned_output
+            return self._sanitize_local_output(result.stdout)
         except subprocess.TimeoutExpired as e:
             self.logger.error(f"Local llama.cpp inference timed out after {timeout_seconds}s")
             raise RuntimeError(f"Local inference timeout: {e}") from e
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"Local llama.cpp execution failed (exit {e.returncode}): {e.stderr}")
-            raise RuntimeError(f"Local llama.cpp execution error: {e.stderr}") from e
+            # stderr is discarded by design; run the command manually to debug.
+            self.logger.error(
+                f"Local llama.cpp execution failed (exit {e.returncode}). "
+                f"Run the binary manually in Termux to inspect diagnostics."
+            )
+            raise RuntimeError(f"Local llama.cpp execution error (exit {e.returncode})") from e
+
+    # Defensive filter for perf lines that some llama-cli builds print on stdout,
+    # e.g. "[ Prompt: 42.1 t/s | Generation: 12.3 t/s ]" or "llama_perf_context_print: ...".
+    _TELEMETRY_LINE_RE = re.compile(
+        r"^\s*(\[\s*Prompt:.*t/s.*\]|llama_perf_\w+:.*|>\s*EOF.*|Exiting\.\.\.)\s*$",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _sanitize_local_output(cls, raw_output: str) -> str:
+        """
+        Remove residual ChatML tokens and telemetry lines from llama.cpp stdout.
+        """
+        text = raw_output.replace("<|im_end|>", "").replace("<|im_start|>assistant", "")
+        lines = [line for line in text.splitlines() if not cls._TELEMETRY_LINE_RE.match(line)]
+        return "\n".join(lines).strip()

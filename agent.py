@@ -28,6 +28,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger("DroidServer-Agent")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Shared with telegram_listener.py (manual "Run now" button) to detect active runs.
+AGENT_LOCK_PATH = os.path.join(BASE_DIR, "data", ".agent.lock")
+# Exit code used when another run already holds the lock (BSD EX_TEMPFAIL).
+EXIT_ALREADY_RUNNING = 75
+
+_lock_handle = None  # Kept referenced for the whole process lifetime.
+
+
+def acquire_run_lock() -> bool:
+    """
+    Acquire a non-blocking exclusive flock so only one agent.py runs at a time.
+
+    The kernel releases the lock automatically when the process exits (even on
+    crash), so stale locks are impossible. On platforms without fcntl (Windows
+    development machines) locking is skipped.
+
+    :return: True if the lock was acquired (or locking unsupported), False if busy.
+    """
+    global _lock_handle
+    try:
+        import fcntl
+    except ImportError:
+        return True
+
+    os.makedirs(os.path.dirname(AGENT_LOCK_PATH), exist_ok=True)
+    handle = open(AGENT_LOCK_PATH, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _lock_handle = handle
+    return True
+
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """
@@ -108,6 +143,10 @@ def main() -> None:
         for m in sorted(available_modules):
             print(f"  - {m}")
         sys.exit(0)
+
+    if not acquire_run_lock():
+        logger.warning("Another agent.py run is already in progress. Skipping this execution.")
+        sys.exit(EXIT_ALREADY_RUNNING)
 
     config = load_config(args.config)
 

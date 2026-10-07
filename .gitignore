@@ -20,6 +20,7 @@ data/notes_inbox/*
 !data/notes_inbox/.gitkeep
 data/notes_vault/*
 !data/notes_vault/.gitkeep
+data/.agent.lock
 
 # Environment and secrets
 config.json

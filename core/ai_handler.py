@@ -135,6 +135,15 @@ class AIHandler:
         if not os.path.isfile(model_path):
             raise FileNotFoundError(f"Model GGUF file not found at: {model_path}")
 
+        # If llama-cli is configured but llama-completion is available in the same
+        # directory, prefer llama-completion for clean non-interactive generation.
+        effective_bin = binary_path
+        if os.path.basename(binary_path) == "llama-cli":
+            comp_candidate = os.path.join(os.path.dirname(binary_path), "llama-completion")
+            if os.path.isfile(comp_candidate):
+                effective_bin = comp_candidate
+                self.logger.debug(f"Using headless llama-completion: {effective_bin}")
+
         # Construct prompt compatible with ChatML / standard instruct formats
         full_prompt = ""
         if system_prompt:
@@ -142,7 +151,7 @@ class AIHandler:
         full_prompt += f"<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
 
         cmd = [
-            binary_path,
+            effective_bin,
             "-m", model_path,
             "-p", full_prompt,
             "-n", str(max_tokens),
@@ -156,7 +165,7 @@ class AIHandler:
         # For llama-cli: pass -st (--single-turn) so the process terminates
         # immediately upon generating its completion instead of staying in
         # conversational mode waiting at the '>' prompt.
-        if "llama-cli" in os.path.basename(binary_path):
+        if "llama-cli" in os.path.basename(effective_bin):
             cmd.append("-st")
 
         # Strictly eliminate any interactive or conversation mode flags
@@ -245,7 +254,15 @@ class AIHandler:
         r"Exiting\.\.\.|"
         r"error:.*|"
         r"warning:.*|"
-        r"={3,}|-{3,}|\*{3,}"
+        r"Loading model\.\.\..*|"
+        r"ftype\s*:.*|"
+        r"modalities\s*:.*|"
+        r"model\s*:.*|"
+        r"build\s*:.*|"
+        r"available commands:.*|"
+        r"/\w+.*|"
+        r"={3,}|-{3,}|\*{3,}|"
+        r"[▄█▀\s]+"
         r")\s*$",
         re.IGNORECASE,
     )
@@ -279,29 +296,39 @@ class AIHandler:
                     text = text.split(marker)[-1]
                     break
 
-        # 2. Stop token clipping: discard any subsequent tokens / next turn generations
+        # 2. If 'available commands:' banner is present (llama-cli chat mode header),
+        # drop everything up to the end of the slash commands block.
+        if "available commands:" in text:
+            after_cmds = text.split("available commands:", 1)[-1]
+            cmd_lines = after_cmds.splitlines()
+            content_lines = []
+            in_banner = True
+            for line in cmd_lines:
+                stripped = line.strip()
+                if in_banner:
+                    if not stripped or stripped.startswith("/") or ("/" in stripped and any(c in stripped for c in ("exit", "clear", "read", "glob", "regen"))):
+                        continue
+                    in_banner = False
+                content_lines.append(line)
+            text = "\n".join(content_lines)
+
+        # 3. Stop token clipping: discard any subsequent tokens / next turn generations
         for stop_token in cls.STOP_TOKENS:
             if stop_token in text:
                 text = text.split(stop_token, 1)[0]
-
-        # 3. Interactive end-prompt clipping: in conversation mode, llama-cli prints '\n>'
-        # after generation waiting for user input. Everything before '\n>' is the assistant output.
-        if "\n>" in text:
-            text = text.split("\n>")[0]
-
-        # Strip any trailing lines starting with prompt marker '>'
-        lines = text.splitlines()
-        while lines and (lines[-1].strip().startswith(">") or not lines[-1].strip()):
-            lines.pop()
-        text = "\n".join(lines)
 
         # 4. Remove residual telemetry, prompt markers, and diagnostic lines
         clean_lines = []
         for line in text.splitlines():
             line_str = line.strip()
-            if not line_str or line_str == ">" or cls._DIAGNOSTIC_LINE_RE.match(line):
+            if not line_str or cls._DIAGNOSTIC_LINE_RE.match(line):
                 continue
-            clean_lines.append(line)
+            # Strip leading prompt marker '> ' or '>'
+            if line_str.startswith(">"):
+                line_str = line_str.lstrip(">").strip()
+                if not line_str or cls._DIAGNOSTIC_LINE_RE.match(line_str):
+                    continue
+            clean_lines.append(line_str)
 
         final_text = "\n".join(clean_lines).strip()
 
@@ -310,4 +337,5 @@ class AIHandler:
             return cls.DEFAULT_FALLBACK_TEXT
 
         return final_text
+
 

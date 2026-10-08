@@ -41,6 +41,7 @@ class BaseModule(ABC):
         self.config: Dict[str, Any] = config
         self.ai_handler: "AIHandler" = ai_handler
         self.telegram_outbound: "TelegramOutbound" = telegram_outbound
+        self.telegram: "TelegramOutbound" = telegram_outbound
         self.logger: logging.Logger = logging.getLogger(self.__class__.__name__)
 
     @property

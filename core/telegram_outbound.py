@@ -76,6 +76,20 @@ class TelegramOutbound:
             try:
                 self.logger.debug(f"Sending Telegram outbound chunk ({len(chunk)} chars)...")
                 response = requests.post(self.api_url, json=payload, timeout=self.timeout)
+                # If Telegram returns 400 due to unescaped markdown entities from AI, retry as plain text
+                if response.status_code == 400 and parse_mode:
+                    try:
+                        err_desc = response.json().get("description", "")
+                        if "parse entities" in err_desc.lower() or "can't parse" in err_desc.lower():
+                            self.logger.warning(
+                                f"Telegram markdown parse error: {err_desc}. Retrying chunk as plain text..."
+                            )
+                            plain_payload = dict(payload)
+                            plain_payload.pop("parse_mode", None)
+                            response = requests.post(self.api_url, json=plain_payload, timeout=self.timeout)
+                    except Exception as fallback_err:
+                        self.logger.debug(f"Fallback retry error: {fallback_err}")
+
                 response.raise_for_status()
                 result_data = response.json()
                 if not result_data.get("ok"):

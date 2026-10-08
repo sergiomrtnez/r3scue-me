@@ -880,11 +880,7 @@ class TelegramListener:
         def _watcher() -> None:
             code = proc.wait()
             if code == 0:
-                self.bot.send_message(
-                    chat_id,
-                    f"✅ <b>{esc(mod_title)}:</b> Ejecución finalizada con éxito.",
-                    parse_mode="HTML"
-                )
+                logger.info(f"Agent execution completed successfully for: {mod_title}")
             elif code == AGENT_EXIT_ALREADY_RUNNING:
                 self.bot.send_message(
                     chat_id,

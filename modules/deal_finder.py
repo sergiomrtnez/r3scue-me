@@ -110,37 +110,33 @@ class DealFinder(BaseModule):
         )
 
         system_prompt = (
-            "You are an expert e-commerce and deals analyst. "
-            "You are evaluating scraped snippets from web pages searching for specific user keywords.\n"
-            "Your tasks:\n"
-            "1. Filter out false positives (e.g. phone cases or chargers when user wanted a phone, "
-            "or sold-out items, or general navigation text).\n"
-            "2. Identify legitimate, genuine deals or price drops matching the keywords.\n"
-            "3. If legitimate deals exist, output a concise alert with: Title, Estimated Price, "
-            "Why it is a good deal, and the Link.\n"
-            "4. If all candidates are junk, advertisements, or false positives, reply strictly with: NO_DEALS_FOUND."
+            "Eres un analista experto en compras, tecnología y detección de chollos. "
+            "Evalúa los fragmentos web encontrados para las palabras clave del usuario.\n"
+            "Instrucciones:\n"
+            "1. Filtra falsos positivos (accesorios irrelevantes, productos agotados o textos de navegación).\n"
+            "2. Si encuentras ofertas reales o bajadas de precio legítimas, redacta una alerta clara y atractiva "
+            "con título, precio estimado, motivo por el que vale la pena y enlace directo.\n"
+            "3. Si no hay ofertas reales o todo es irrelevante, responde estrictamente: NO_DEALS_FOUND.\n"
+            "4. Si hay chollos legítimos, responde ÚNICAMENTE con el mensaje final listo para Telegram (en español)."
         )
 
         user_prompt = (
-            f"Keywords monitored: {', '.join(keywords)}\n\n"
-            f"Scraped candidate snippets:\n{formatted_candidates}"
+            f"Palabras clave buscadas: {', '.join(keywords)}\n\n"
+            f"Candidatos encontrados:\n{formatted_candidates}"
         )
 
         self.logger.info("Evaluating candidates with AI to filter false positives...")
-        analysis = self.ai_handler.prompt(
+        texto_ia = self.ai_handler.prompt(
             user_prompt=user_prompt,
             system_prompt=system_prompt,
             temperature=0.3,
             max_tokens=650
         )
 
-        if "NO_DEALS_FOUND" in analysis.strip():
+        texto_ia = (texto_ia or "").strip()
+        if not texto_ia or "NO_DEALS_FOUND" in texto_ia:
             self.logger.info("AI determined no legitimate deals among candidates. Suppressing alert.")
             return
 
         self.logger.info("Legitimate deals confirmed by AI. Dispatching Telegram alert...")
-        message_body = f"🔥 *AI Deal Alert: Matching Items Found!*\n\n{analysis}"
-        self.telegram_outbound.send_message(
-            text=message_body,
-            parse_mode="Markdown"
-        )
+        self.telegram.send_message(texto_ia)

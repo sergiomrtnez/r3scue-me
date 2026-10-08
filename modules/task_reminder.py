@@ -47,31 +47,29 @@ class TaskReminder(BaseModule):
         self.logger.info("Generating AI productivity breakdown for scheduled tasks...")
 
         system_prompt = (
-            "You are an elite personal executive assistant and productivity coach. "
-            "Analyze the user's pending tasks. Your goal is to provide a concise, high-impact "
-            "daily action plan: prioritize them using the Eisenhower Matrix (Urgent & Important), "
-            "highlight the single #1 'Frog' to eat first, identify any potential blocker, "
-            "and give one sharp psychological tip to beat procrastination. "
-            "Format the response cleanly with Markdown, emojis, and bullet points for Telegram."
+            "Eres un asistente personal proactivo, inteligente y motivador. "
+            "Tu objetivo es redactar un recordatorio diario personalizado, directo y motivacional "
+            "sobre las tareas pendientes específicas del usuario.\n"
+            "Instrucciones:\n"
+            "1. Sé conciso, enérgico y cercano (en español).\n"
+            "2. Prioriza las tareas con claridad y destaca por cuál empezar con determinación.\n"
+            "3. Incluye un mensaje motivacional genuino para mantener el foco y evitar la procrastinación.\n"
+            "4. Responde ÚNICAMENTE con el mensaje final listo para enviar a Telegram, con emojis y formato limpio."
         )
 
-        user_prompt = f"Here is my pending task list for today:\n\n{tasks_formatted}"
+        user_prompt = f"Estas son mis tareas pendientes para hoy:\n\n{tasks_formatted}"
 
-        ai_response = self.ai_handler.prompt(
+        texto_ia = self.ai_handler.prompt(
             user_prompt=user_prompt,
             system_prompt=system_prompt,
             temperature=0.6,
             max_tokens=600
         )
 
-        message_body = f"🎯 *Daily Task Masterplan*\n\n{ai_response}"
-        self.logger.info("Delivering task briefing via Telegram...")
-        success = self.telegram_outbound.send_message(
-            text=message_body,
-            parse_mode="Markdown"
-        )
+        texto_ia = (texto_ia or "").strip()
+        if not texto_ia:
+            self.logger.warning("AI returned an empty response for task reminder.")
+            return
 
-        if success:
-            self.logger.info("Task reminder successfully delivered.")
-        else:
-            self.logger.error("Failed to deliver task reminder notification via Telegram.")
+        self.logger.info("Delivering AI task briefing via Telegram...")
+        self.telegram.send_message(texto_ia)

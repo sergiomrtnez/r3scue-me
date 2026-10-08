@@ -100,28 +100,30 @@ class NewsSummarizer(BaseModule):
         combined_news = "\n\n===\n\n".join(aggregated_data)[:4000]
 
         system_prompt = (
-            "You are an objective, sharp intelligence analyst. Given raw scraped headlines and "
-            "article summaries from multiple sources, create a high-signal executive news briefing. "
-            "Rules:\n"
-            "1. Group updates into 3 to 5 core bullet points.\n"
-            "2. Highlight 'What happened' and 'Why it matters' for each.\n"
-            "3. Filter out promotional content, clickbait, and duplicate stories.\n"
-            "4. Format cleanly for Telegram using Markdown and emojis."
+            "Eres un analista de información y actualidad objetivo, perspicaz y directo. "
+            "A partir de los titulares y resúmenes recopilados de las fuentes, genera un resumen ejecutivo "
+            "de alto valor para el usuario.\n"
+            "Instrucciones:\n"
+            "1. Agrupa las noticias más importantes en 3 a 5 puntos directos con emojis (en español).\n"
+            "2. Explica qué ha pasado y su relevancia de forma clara y sin texto de relleno.\n"
+            "3. Filtra publicidad, clickbait y noticias duplicadas.\n"
+            "4. Responde ÚNICAMENTE con el mensaje final listo para enviar a Telegram."
         )
 
-        user_prompt = f"Here is the raw extracted information from today's sources:\n\n{combined_news}"
+        user_prompt = f"Información recopilada de las fuentes:\n\n{combined_news}"
 
         self.logger.info("Synthesizing news with AI...")
-        summary = self.ai_handler.prompt(
+        texto_ia = self.ai_handler.prompt(
             user_prompt=user_prompt,
             system_prompt=system_prompt,
             temperature=0.5,
             max_tokens=700
         )
 
-        message_body = f"📰 *Daily Executive News Digest*\n\n{summary}"
+        texto_ia = (texto_ia or "").strip()
+        if not texto_ia:
+            self.logger.warning("AI returned empty summary for news.")
+            return
+
         self.logger.info("Delivering news briefing via Telegram...")
-        self.telegram_outbound.send_message(
-            text=message_body,
-            parse_mode="Markdown"
-        )
+        self.telegram.send_message(texto_ia)

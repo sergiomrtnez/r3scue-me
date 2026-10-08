@@ -150,26 +150,33 @@ class AIHandler:
             "-c", str(context_size),
             "-t", str(threads),
             "--no-display-prompt",
-            # Disable llama.cpp internal logger (model loading, sampler info,
-            # perf counters such as "Prompt: 42.1 t/s"). llama-cli has no '-q'.
             "--log-disable",
         ]
-        # Optional user-provided flags (e.g. ["-no-cnv"] on builds that default
-        # to interactive conversation mode).
+
+        # Strictly eliminate any interactive or conversation mode flags
+        # (-i, --interactive, --conversation, -cnv) so llama-cli generates
+        # the response and exits immediately rather than waiting at '>'
+        forbidden_flags = {
+            "-i", "--interactive", "--conversation", "-cnv",
+            "--in-prefix", "--in-suffix", "--multiline-input"
+        }
         extra_args = local_config.get("extra_args", [])
         if isinstance(extra_args, list):
-            cmd.extend(str(arg) for arg in extra_args)
+            clean_extra = [
+                str(arg) for arg in extra_args
+                if str(arg).strip().lower() not in forbidden_flags
+            ]
+            cmd.extend(clean_extra)
 
         self.logger.debug(f"Spawning local llama.cpp process: {' '.join(cmd)}")
         try:
             result = subprocess.run(
                 cmd,
-                # No stdin: if the binary ever drops into interactive mode it
-                # receives EOF immediately instead of hanging until timeout.
+                # Absolute input isolation: stdin=DEVNULL prevents blocking on '>' prompt
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                # Telemetry / diagnostics go to stderr: discard them entirely so
-                # they can never leak into the AI response or fill a pipe buffer.
+                # Absolute error isolation: stderr=DEVNULL completely silences
+                # ASCII banners, model load info, and telemetry metrics
                 stderr=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
@@ -180,14 +187,22 @@ class AIHandler:
             return self._sanitize_local_output(result.stdout, full_prompt=full_prompt)
         except subprocess.TimeoutExpired as e:
             self.logger.error(f"Local llama.cpp inference timed out after {timeout_seconds}s")
-            raise RuntimeError(f"Local inference timeout: {e}") from e
+            return self.DEFAULT_FALLBACK_TEXT
         except subprocess.CalledProcessError as e:
-            # stderr is discarded by design; run the command manually to debug.
             self.logger.error(
                 f"Local llama.cpp execution failed (exit {e.returncode}). "
-                f"Run the binary manually in Termux to inspect diagnostics."
+                f"Returning clean fallback message."
             )
-            raise RuntimeError(f"Local llama.cpp execution error (exit {e.returncode})") from e
+            return self.DEFAULT_FALLBACK_TEXT
+        except Exception as e:
+            self.logger.error(f"Unexpected error during local AI inference: {e}")
+            return self.DEFAULT_FALLBACK_TEXT
+
+    # Default clean fallback message returned if inference or filtering yields no usable text
+    DEFAULT_FALLBACK_TEXT = (
+        "No se pudo generar la respuesta de la IA. "
+        "Por favor, revisa tus tareas pendientes."
+    )
 
     # Common assistant turn start markers across ChatML/Instruct templates
     ASSISTANT_MARKERS = (
@@ -216,11 +231,13 @@ class AIHandler:
         r"llama_\w+:.*|"
         r"ggml_\w+:.*|"
         r"main:.*|"
-        r"build:\s*\d+.*|"
+        r"(?:llama\.cpp\s+)?build[:\s]\s*\d+.*|"
         r"system_info:.*|"
         r"sampler\s*chain:.*|"
-        r">\s*EOF.*|"
-        r"Exiting\.\.\."
+        r"==\s*Running in .*==|"
+        r"(?:>\s*)?EOF.*|"
+        r"Exiting\.\.\.|"
+        r"={3,}|-{3,}|\*{3,}"
         r")\s*$",
         re.IGNORECASE,
     )
@@ -230,37 +247,57 @@ class AIHandler:
         """
         Extract exclusively the assistant's generated response from llama.cpp stdout.
 
-        Discards ASCII banners, system diagnostics, and prompt echoes that precede
-        the assistant generation token, and removes trailing stop tokens or telemetry lines.
+        Performs strict partitioning to discard banners, model initialization info,
+        interactive prompts, and echoed prompt blocks. Returns a safe default string
+        if the filter yields empty content, ensuring console garbage never leaks to Telegram.
         """
-        if not raw_output:
-            return ""
+        if not raw_output or not raw_output.strip():
+            return cls.DEFAULT_FALLBACK_TEXT
 
         text = raw_output
 
-        # 1. If full prompt is present in raw output (prompt echo), discard everything up to and including it
-        if full_prompt and full_prompt in text:
+        # 1. Strict partitioning: isolate assistant output from prompt echoes and banners
+        if "<|im_start|>assistant" in text:
+            text = text.split("<|im_start|>assistant")[-1]
+        elif "<|im_start|> assistant" in text:
+            text = text.split("<|im_start|> assistant")[-1]
+        elif "\n>" in text:
+            prompt_parts = [p.strip() for p in text.split("\n>") if p.strip()]
+            text = prompt_parts[-1] if prompt_parts else ""
+        elif full_prompt and full_prompt in text:
             text = text.split(full_prompt, 1)[-1]
         elif full_prompt and full_prompt.strip() in text:
             text = text.split(full_prompt.strip(), 1)[-1]
         else:
-            # 2. Check for assistant turn markers (e.g. ChatML '<|im_start|>assistant')
-            # If present, everything preceding the last marker is banner/prompt echo.
             for marker in cls.ASSISTANT_MARKERS:
                 if marker in text:
                     text = text.split(marker)[-1]
                     break
 
-        # 3. Discard trailing stop tokens and subsequent generation turns
+        # 2. Clip trailing stop tokens
         for stop_token in cls.STOP_TOKENS:
             if stop_token in text:
                 text = text.split(stop_token, 1)[0]
 
-        # 4. Remove residual telemetry and diagnostic lines
+        # 3. Clip trailing interactive prompt chars (e.g. trailing '\n>' or prompt line)
+        if "\n>" in text:
+            text = text.split("\n>")[0]
+        while text.rstrip().endswith(">"):
+            text = text.rstrip()[:-1]
+
+        # 4. Remove residual telemetry, prompt markers, and diagnostic lines
         clean_lines = []
         for line in text.splitlines():
-            if not cls._DIAGNOSTIC_LINE_RE.match(line):
-                clean_lines.append(line)
+            line_str = line.strip()
+            if not line_str or line_str == ">" or cls._DIAGNOSTIC_LINE_RE.match(line):
+                continue
+            clean_lines.append(line)
 
-        return "\n".join(clean_lines).strip()
+        final_text = "\n".join(clean_lines).strip()
+
+        # 5. Strict safety fallback: if filter results in empty string, return default text
+        if not final_text:
+            return cls.DEFAULT_FALLBACK_TEXT
+
+        return final_text
 

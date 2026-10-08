@@ -525,9 +525,21 @@ class TelegramListener:
                 # "message is not modified" happens when user taps refresh or re-selects same state
                 if "message is not modified" in str(e).lower():
                     return None
-                logger.warning(f"edit_message_text error ({e}); falling back to send_message")
+                # Only fall back to fresh message if the target message was deleted or missing
+                if "message to edit not found" in str(e).lower() or "message can't be edited" in str(e).lower():
+                    logger.warning(f"Message {message_id} cannot be edited; sending fresh.")
+                    return self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode="HTML",
+                        reply_markup=markup,
+                        disable_web_page_preview=True
+                    )
+                logger.warning(f"edit_message_text error ({e}); skipping fallback to prevent duplicate messages.")
+                return None
             except Exception as e:
-                logger.warning(f"Unexpected render edit error: {e}; falling back to send_message")
+                logger.warning(f"Unexpected render edit error: {e}")
+                return None
 
         return self.bot.send_message(
             chat_id=chat_id,

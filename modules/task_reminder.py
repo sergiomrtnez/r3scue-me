@@ -75,8 +75,14 @@ class TaskReminder(BaseModule):
 
         texto_ia = (texto_ia or "").strip()
         if not texto_ia:
-            self.logger.warning("AI returned an empty response for task reminder.")
-            return
+            self.logger.warning("AI returned empty text. Using clean default reminder.")
+            texto_ia = (
+                "📋 *Recordatorio de Tareas Pendientes*\n\n"
+                f"Tienes tareas pendientes para hoy:\n{tasks_formatted}\n\n"
+                "¡Mucho ánimo con la jornada, empieza por la más importante!"
+            )
 
+        # SOLE Telegram dispatch point: strictly the clean AI text at the end.
+        # No initial execution banners or progress logs are sent to the user.
         self.logger.info("Delivering AI task briefing via Telegram...")
         self.telegram.send_message(texto_ia)

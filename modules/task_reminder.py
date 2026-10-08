@@ -49,15 +49,22 @@ class TaskReminder(BaseModule):
         system_prompt = (
             "Eres un asistente personal proactivo, inteligente y motivador. "
             "Tu objetivo es redactar un recordatorio diario personalizado, directo y motivacional "
-            "sobre las tareas pendientes específicas del usuario.\n"
+            "sobre las tareas pendientes específicas del usuario.\n\n"
+            "REGLA ESTRICTA DE PERSPECTIVA:\n"
+            "Tú NO puedes realizar las tareas. Tu único trabajo es dirigirte al usuario (de tú) y recordarle que ÉL debe hacerlas. "
+            "Nunca hables en primera persona sobre la ejecución de las tareas (ej: prohibido decir 'enviaré', debes decir 'envía').\n\n"
             "Instrucciones:\n"
-            "1. Sé conciso, enérgico y cercano (en español).\n"
-            "2. Prioriza las tareas con claridad y destaca por cuál empezar con determinación.\n"
-            "3. Incluye un mensaje motivacional genuino para mantener el foco y evitar la procrastinación.\n"
-            "4. Responde ÚNICAMENTE con el mensaje final listo para enviar a Telegram, con emojis y formato limpio."
+            "1. Dirígete siempre al usuario de tú (emplea el modo imperativo o segunda persona: 'envía', 'haz', 'organiza').\n"
+            "2. Sé conciso, enérgico y cercano (en español).\n"
+            "3. Prioriza las tareas con claridad y destaca por cuál empezar con determinación hoy.\n"
+            "4. Incluye un mensaje motivacional genuino para mantener el foco y evitar la procrastinación.\n"
+            "5. Responde ÚNICAMENTE con el mensaje final listo para enviar a Telegram, con emojis y formato limpio."
         )
 
-        user_prompt = f"Estas son mis tareas pendientes para hoy:\n\n{tasks_formatted}"
+        user_prompt = (
+            f"Estas son mis tareas pendientes para hoy (recuérdame con energía que YO debo realizarlas, hablándome de tú):\n\n"
+            f"{tasks_formatted}"
+        )
 
         texto_ia = self.ai_handler.prompt(
             user_prompt=user_prompt,

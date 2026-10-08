@@ -177,7 +177,7 @@ class AIHandler:
                 timeout=timeout_seconds,
                 check=True
             )
-            return self._sanitize_local_output(result.stdout)
+            return self._sanitize_local_output(result.stdout, full_prompt=full_prompt)
         except subprocess.TimeoutExpired as e:
             self.logger.error(f"Local llama.cpp inference timed out after {timeout_seconds}s")
             raise RuntimeError(f"Local inference timeout: {e}") from e
@@ -189,18 +189,78 @@ class AIHandler:
             )
             raise RuntimeError(f"Local llama.cpp execution error (exit {e.returncode})") from e
 
-    # Defensive filter for perf lines that some llama-cli builds print on stdout,
-    # e.g. "[ Prompt: 42.1 t/s | Generation: 12.3 t/s ]" or "llama_perf_context_print: ...".
-    _TELEMETRY_LINE_RE = re.compile(
-        r"^\s*(\[\s*Prompt:.*t/s.*\]|llama_perf_\w+:.*|>\s*EOF.*|Exiting\.\.\.)\s*$",
+    # Common assistant turn start markers across ChatML/Instruct templates
+    ASSISTANT_MARKERS = (
+        "<|im_start|>assistant",
+        "<|im_start|> assistant",
+        "<start_of_turn>model",
+        "<|assistant|>",
+        "[/INST]",
+        "[ASSISTANT]",
+    )
+
+    # Common end-of-turn / stop tokens
+    STOP_TOKENS = (
+        "<|im_end|>",
+        "<end_of_turn>",
+        "<|eot_id|>",
+        "<|end_of_text|>",
+        "</s>",
+        "<|im_start|>",
+    )
+
+    # Diagnostic and telemetry lines that llama-cli / ggml may print
+    _DIAGNOSTIC_LINE_RE = re.compile(
+        r"^\s*("
+        r"\[\s*Prompt:.*t/s.*\]|"
+        r"llama_\w+:.*|"
+        r"ggml_\w+:.*|"
+        r"main:.*|"
+        r"build:\s*\d+.*|"
+        r"system_info:.*|"
+        r"sampler\s*chain:.*|"
+        r">\s*EOF.*|"
+        r"Exiting\.\.\."
+        r")\s*$",
         re.IGNORECASE,
     )
 
     @classmethod
-    def _sanitize_local_output(cls, raw_output: str) -> str:
+    def _sanitize_local_output(cls, raw_output: str, full_prompt: Optional[str] = None) -> str:
         """
-        Remove residual ChatML tokens and telemetry lines from llama.cpp stdout.
+        Extract exclusively the assistant's generated response from llama.cpp stdout.
+
+        Discards ASCII banners, system diagnostics, and prompt echoes that precede
+        the assistant generation token, and removes trailing stop tokens or telemetry lines.
         """
-        text = raw_output.replace("<|im_end|>", "").replace("<|im_start|>assistant", "")
-        lines = [line for line in text.splitlines() if not cls._TELEMETRY_LINE_RE.match(line)]
-        return "\n".join(lines).strip()
+        if not raw_output:
+            return ""
+
+        text = raw_output
+
+        # 1. If full prompt is present in raw output (prompt echo), discard everything up to and including it
+        if full_prompt and full_prompt in text:
+            text = text.split(full_prompt, 1)[-1]
+        elif full_prompt and full_prompt.strip() in text:
+            text = text.split(full_prompt.strip(), 1)[-1]
+        else:
+            # 2. Check for assistant turn markers (e.g. ChatML '<|im_start|>assistant')
+            # If present, everything preceding the last marker is banner/prompt echo.
+            for marker in cls.ASSISTANT_MARKERS:
+                if marker in text:
+                    text = text.split(marker)[-1]
+                    break
+
+        # 3. Discard trailing stop tokens and subsequent generation turns
+        for stop_token in cls.STOP_TOKENS:
+            if stop_token in text:
+                text = text.split(stop_token, 1)[0]
+
+        # 4. Remove residual telemetry and diagnostic lines
+        clean_lines = []
+        for line in text.splitlines():
+            if not cls._DIAGNOSTIC_LINE_RE.match(line):
+                clean_lines.append(line)
+
+        return "\n".join(clean_lines).strip()
+

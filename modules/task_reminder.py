@@ -74,8 +74,8 @@ class TaskReminder(BaseModule):
         )
 
         texto_ia = (texto_ia or "").strip()
-        if not texto_ia:
-            self.logger.warning("AI returned empty text. Using clean default reminder.")
+        if not texto_ia or texto_ia == self.ai_handler.DEFAULT_FALLBACK_TEXT:
+            self.logger.warning("AI returned empty or fallback text. Using clean default reminder.")
             texto_ia = (
                 "📋 *Recordatorio de Tareas Pendientes*\n\n"
                 f"Tienes tareas pendientes para hoy:\n{tasks_formatted}\n\n"

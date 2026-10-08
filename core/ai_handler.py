@@ -162,6 +162,13 @@ class AIHandler:
             "--log-disable",
         ]
 
+        # For llama-cli: pass -st (--single-turn) so the process terminates
+        # immediately upon generating its completion instead of staying in
+        # conversational mode waiting at the '>' prompt.
+        if "llama-cli" in os.path.basename(effective_bin):
+            if "-st" not in cmd and "--single-turn" not in cmd:
+                cmd.append("-st")
+
         # Strictly eliminate any interactive or conversation mode flags
         # (-i, --interactive, --conversation, -cnv) so llama-cli generates
         # the response and exits immediately rather than waiting at '>'
@@ -177,7 +184,10 @@ class AIHandler:
             ]
             cmd.extend(clean_extra)
 
-        self.logger.debug(f"Spawning local llama.cpp process: {' '.join(cmd)}")
+        self.logger.info(
+            f"Spawning local llama.cpp ({os.path.basename(effective_bin)}) "
+            f"threads={threads}, max_tokens={max_tokens}, context={context_size}"
+        )
         try:
             result = subprocess.run(
                 cmd,
@@ -192,7 +202,16 @@ class AIHandler:
                 timeout=timeout_seconds,
                 check=True
             )
-            return self._sanitize_local_output(result.stdout, full_prompt=full_prompt)
+            sanitized = self._sanitize_local_output(result.stdout, full_prompt=full_prompt)
+            if sanitized == self.DEFAULT_FALLBACK_TEXT:
+                self.logger.warning(
+                    f"Local AI sanitization returned fallback. "
+                    f"stdout len={len(result.stdout)}, snippet={repr(result.stdout[:200])} | "
+                    f"stderr len={len(result.stderr)}, snippet={repr(result.stderr[:200])}"
+                )
+            else:
+                self.logger.info(f"Local AI inference successful ({len(sanitized)} chars generated)")
+            return sanitized
         except subprocess.TimeoutExpired as e:
             self.logger.error(f"Local llama.cpp inference timed out after {timeout_seconds}s")
             return self.DEFAULT_FALLBACK_TEXT

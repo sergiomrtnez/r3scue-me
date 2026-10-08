@@ -162,12 +162,6 @@ class AIHandler:
             "--log-disable",
         ]
 
-        # For llama-cli: pass -st (--single-turn) so the process terminates
-        # immediately upon generating its completion instead of staying in
-        # conversational mode waiting at the '>' prompt.
-        if "llama-cli" in os.path.basename(effective_bin):
-            cmd.append("-st")
-
         # Strictly eliminate any interactive or conversation mode flags
         # (-i, --interactive, --conversation, -cnv) so llama-cli generates
         # the response and exits immediately rather than waiting at '>'
@@ -190,9 +184,8 @@ class AIHandler:
                 # Absolute input isolation: stdin=DEVNULL prevents blocking on '>' prompt
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                # Absolute error isolation: stderr=DEVNULL completely silences
-                # ASCII banners, model load info, and telemetry metrics
-                stderr=subprocess.DEVNULL,
+                # Error isolation: capture stderr for error logging without leaking to user
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -204,8 +197,9 @@ class AIHandler:
             self.logger.error(f"Local llama.cpp inference timed out after {timeout_seconds}s")
             return self.DEFAULT_FALLBACK_TEXT
         except subprocess.CalledProcessError as e:
+            err_msg = (e.stderr or "").strip()
             self.logger.error(
-                f"Local llama.cpp execution failed (exit {e.returncode}). "
+                f"Local llama.cpp execution failed (exit {e.returncode}): {err_msg}. "
                 f"Returning clean fallback message."
             )
             return self.DEFAULT_FALLBACK_TEXT

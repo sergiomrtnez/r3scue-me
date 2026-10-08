@@ -27,6 +27,18 @@ import time
 import zlib
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+# Auto-switch to project virtualenv if executed directly outside .venv
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_VENV_PY = os.path.join(_BASE_DIR, ".venv", "bin", "python")
+if not os.path.isfile(_VENV_PY):
+    _VENV_PY = os.path.join(_BASE_DIR, ".venv", "Scripts", "python.exe")
+
+if os.path.isfile(_VENV_PY) and os.path.abspath(sys.executable) != os.path.abspath(_VENV_PY):
+    try:
+        import telebot
+    except ImportError:
+        os.execv(_VENV_PY, [_VENV_PY] + sys.argv)
+
 import telebot
 from telebot.apihelper import ApiTelegramException
 from telebot.types import (
@@ -241,6 +253,19 @@ def is_agent_running() -> bool:
         return False
 
 
+def get_agent_python() -> str:
+    """
+    Return project virtualenv python if available, falling back to sys.executable.
+    """
+    venv_py = os.path.join(BASE_DIR, ".venv", "bin", "python")
+    if os.path.isfile(venv_py) and os.access(venv_py, os.X_OK):
+        return venv_py
+    venv_py_win = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
+    if os.path.isfile(venv_py_win):
+        return venv_py_win
+    return sys.executable
+
+
 def launch_agent(module: Optional[str] = None) -> subprocess.Popen:
     """
     Spawn agent.py as an independent process (AI is loaded there, never here).
@@ -248,7 +273,7 @@ def launch_agent(module: Optional[str] = None) -> subprocess.Popen:
     Output is appended to the same log used by cron. start_new_session detaches
     it from the listener so restarting the listener does not kill a running job.
     """
-    cmd = [sys.executable, AGENT_SCRIPT]
+    cmd = [get_agent_python(), AGENT_SCRIPT]
     if module:
         cmd += ["--module", module]
     log_handle = open(AGENT_LOG, "a", encoding="utf-8")

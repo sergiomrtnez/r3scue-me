@@ -14,6 +14,19 @@ import json
 import logging
 import os
 import sys
+
+# Auto-switch to project virtualenv if executed directly outside .venv
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_VENV_PY = os.path.join(_BASE_DIR, ".venv", "bin", "python")
+if not os.path.isfile(_VENV_PY):
+    _VENV_PY = os.path.join(_BASE_DIR, ".venv", "Scripts", "python.exe")
+
+if os.path.isfile(_VENV_PY) and os.path.abspath(sys.executable) != os.path.abspath(_VENV_PY):
+    try:
+        import requests
+    except ImportError:
+        os.execv(_VENV_PY, [_VENV_PY] + sys.argv)
+
 from typing import Any, Dict, List, Type
 
 from core.base_module import BaseModule

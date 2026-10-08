@@ -1103,7 +1103,7 @@ class TelegramListener:
 
                 if started:
                     self.bot.answer_callback_query(call.id, "🚀 Ejecución iniciada en segundo plano")
-                    notice = f"🚀 <b>Ejecutando:</b> {esc(msg)}. Se enviará un aviso al completar."
+                    notice = ""
                 else:
                     self.bot.answer_callback_query(call.id, f"⚠️ {msg}", show_alert=True)
                     notice = f"⚠️ <b>Aviso:</b> {esc(msg)}"

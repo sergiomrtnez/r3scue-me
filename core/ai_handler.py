@@ -153,6 +153,12 @@ class AIHandler:
             "--log-disable",
         ]
 
+        # For llama-cli: pass -st (--single-turn) so the process terminates
+        # immediately upon generating its completion instead of staying in
+        # conversational mode waiting at the '>' prompt.
+        if "llama-cli" in os.path.basename(binary_path):
+            cmd.append("-st")
+
         # Strictly eliminate any interactive or conversation mode flags
         # (-i, --interactive, --conversation, -cnv) so llama-cli generates
         # the response and exits immediately rather than waiting at '>'
@@ -237,6 +243,8 @@ class AIHandler:
         r"==\s*Running in .*==|"
         r"(?:>\s*)?EOF.*|"
         r"Exiting\.\.\.|"
+        r"error:.*|"
+        r"warning:.*|"
         r"={3,}|-{3,}|\*{3,}"
         r")\s*$",
         re.IGNORECASE,
@@ -256,14 +264,11 @@ class AIHandler:
 
         text = raw_output
 
-        # 1. Strict partitioning: isolate assistant output from prompt echoes and banners
+        # 1. Start partitioning: strip any prompt echoes and model banners before the response
         if "<|im_start|>assistant" in text:
             text = text.split("<|im_start|>assistant")[-1]
         elif "<|im_start|> assistant" in text:
             text = text.split("<|im_start|> assistant")[-1]
-        elif "\n>" in text:
-            prompt_parts = [p.strip() for p in text.split("\n>") if p.strip()]
-            text = prompt_parts[-1] if prompt_parts else ""
         elif full_prompt and full_prompt in text:
             text = text.split(full_prompt, 1)[-1]
         elif full_prompt and full_prompt.strip() in text:
@@ -274,16 +279,21 @@ class AIHandler:
                     text = text.split(marker)[-1]
                     break
 
-        # 2. Clip trailing stop tokens
+        # 2. Stop token clipping: discard any subsequent tokens / next turn generations
         for stop_token in cls.STOP_TOKENS:
             if stop_token in text:
                 text = text.split(stop_token, 1)[0]
 
-        # 3. Clip trailing interactive prompt chars (e.g. trailing '\n>' or prompt line)
+        # 3. Interactive end-prompt clipping: in conversation mode, llama-cli prints '\n>'
+        # after generation waiting for user input. Everything before '\n>' is the assistant output.
         if "\n>" in text:
             text = text.split("\n>")[0]
-        while text.rstrip().endswith(">"):
-            text = text.rstrip()[:-1]
+
+        # Strip any trailing lines starting with prompt marker '>'
+        lines = text.splitlines()
+        while lines and (lines[-1].strip().startswith(">") or not lines[-1].strip()):
+            lines.pop()
+        text = "\n".join(lines)
 
         # 4. Remove residual telemetry, prompt markers, and diagnostic lines
         clean_lines = []
